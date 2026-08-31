@@ -85,27 +85,85 @@ function validateExtractedData(value: unknown): ExtractedData {
   };
 }
 
-const PROMPT_ITEMS: Record<Recipient, string[]> = {
-  self: [
-    'Jakie masz objawy?',
-    'Od kiedy to trwa?',
-    'Czy masz podwyższoną temperaturę?',
-    'Czy zażyłeś/aś już jakieś leki?',
-    'Ile masz lat?',
-  ],
-  child: [
-    'Jakie objawy ma dziecko?',
-    'Od kiedy to trwa?',
-    'Czy dziecko ma podwyższoną temperaturę?',
-    'Czy dziecko zażyło już jakieś leki?',
-    'Ile lat ma dziecko?',
-  ],
+const FIELD_KEYS = ['symptoms', 'duration', 'temperature', 'medications', 'age'] as const;
+type FieldKey = (typeof FIELD_KEYS)[number];
+
+const FIELD_LABELS: Record<FieldKey, string> = {
+  symptoms: 'Objawy',
+  duration: 'Czas trwania',
+  temperature: 'Temperatura',
+  medications: 'Przyjęte leki',
+  age: 'Wiek',
+};
+
+const PROMPT_ITEMS: Record<Recipient, Record<FieldKey, string>> = {
+  self: {
+    symptoms: 'Jakie masz objawy?',
+    duration: 'Od kiedy to trwa?',
+    temperature: 'Czy masz podwyższoną temperaturę?',
+    medications: 'Czy zażyłeś/aś już jakieś leki?',
+    age: 'Ile masz lat?',
+  },
+  child: {
+    symptoms: 'Jakie objawy ma dziecko?',
+    duration: 'Od kiedy to trwa?',
+    temperature: 'Czy dziecko ma podwyższoną temperaturę?',
+    medications: 'Czy dziecko zażyło już jakieś leki?',
+    age: 'Ile lat ma dziecko?',
+  },
 };
 
 const RECORDING_TITLES: Record<Recipient, string> = {
   self: 'Opisz swoje objawy',
   child: 'Opisz objawy dziecka',
 };
+
+// duration/duration_unit are non-nullable in the schema (see extractFields), so an
+// unspoken duration comes back as the sentinel 0/"days" rather than null.
+function isFieldMissing(result: ExtractedData, field: FieldKey): boolean {
+  switch (field) {
+    case 'symptoms':
+      return !result.symptoms;
+    case 'duration':
+      return result.duration === 0;
+    case 'temperature':
+      return result.temperature == null;
+    case 'medications':
+      return !result.medications;
+    case 'age':
+      return result.age == null;
+  }
+}
+
+function formatFieldValue(result: ExtractedData, field: FieldKey): string | null {
+  switch (field) {
+    case 'symptoms':
+      return result.symptoms || null;
+    case 'duration':
+      return isFieldMissing(result, 'duration')
+        ? null
+        : `${result.duration} ${result.duration_unit === 'hours' ? 'godz.' : 'dni'}`;
+    case 'temperature':
+      return result.temperature != null ? `${result.temperature}°C` : null;
+    case 'medications':
+      return result.medications;
+    case 'age':
+      return result.age != null ? `${result.age} lat` : null;
+  }
+}
+
+// Keeps every already-captured field; only fills in what the previous recording(s) missed.
+function mergeExtractedData(previous: ExtractedData, incoming: ExtractedData): ExtractedData {
+  return {
+    patient_type: previous.patient_type,
+    symptoms: previous.symptoms || incoming.symptoms,
+    duration: isFieldMissing(previous, 'duration') ? incoming.duration : previous.duration,
+    duration_unit: isFieldMissing(previous, 'duration') ? incoming.duration_unit : previous.duration_unit,
+    temperature: previous.temperature ?? incoming.temperature,
+    medications: previous.medications ?? incoming.medications,
+    age: previous.age ?? incoming.age,
+  };
+}
 
 function formatDuration(ms: number): string {
   const totalSeconds = Math.floor(ms / 1000);
@@ -154,7 +212,7 @@ async function extractFields(
       ? 'Nagranie dotyczy dorosłego pacjenta mówiącego o sobie.'
       : 'Nagranie dotyczy rodzica lub opiekuna opisującego objawy swojego dziecka.';
 
-  const systemPrompt = `Jesteś asystentem wywiadu przedkonsultacyjnego w telemedycynie. Wyodrębnij z transkrypcji wypowiedzi pacjenta dokładnie te informacje: objawy, czas trwania dolegliwości, temperaturę ciała (jeśli wspomniana), przyjęte leki (jeśli wspomniane) oraz wiek. ${recipientContext} Pole "patient_type" musi mieć dokładnie wartość "${patientType}". Nie stawiaj diagnozy ani nie udzielaj porad medycznych — wyodrębniaj wyłącznie informacje, które faktycznie padły w wypowiedzi, zachowując ich oryginalne znaczenie (nie interpretuj medycznie objawów ani nazw leków). Nie wymyślaj informacji, których nie było w nagraniu: dla temperature, medications i age użyj null, jeśli nie zostały wspomniane. Normalizuj wartości liczbowe rozsądnie na podstawie sensu wypowiedzi, np. "trzydzieści osiem i pół stopnia" → temperature: 38.5, "dziewięć lat" → age: 9, "od wczoraj" → duration: 1, duration_unit: "days". Pole "symptoms" powinno zawierać objawy oddzielone przecinkami, a "medications" leki oddzielone przecinkami. Jeśli czas trwania nie został w ogóle wspomniany, jako jedyny wyjątek od zakazu wymyślania podaj najbardziej zachowawcze przybliżenie: duration: 0, duration_unit: "days".`;
+  const systemPrompt = `Jesteś asystentem wywiadu przedkonsultacyjnego w telemedycynie. Wyodrębnij z transkrypcji wypowiedzi pacjenta dokładnie te informacje: objawy, czas trwania dolegliwości, temperaturę ciała (jeśli wspomniana), przyjęte leki (jeśli wspomniane) oraz wiek. ${recipientContext} Pole "patient_type" musi mieć dokładnie wartość "${patientType}". Nie stawiaj diagnozy ani nie udzielaj porad medycznych — wyodrębniaj wyłącznie informacje, które faktycznie padły w wypowiedzi, zachowując ich oryginalne znaczenie (nie interpretuj medycznie objawów ani nazw leków). Nie wymyślaj informacji, których nie było w nagraniu: dla temperature, medications i age użyj null, jeśli nie zostały wspomniane. Normalizuj wartości liczbowe rozsądnie na podstawie sensu wypowiedzi, np. "trzydzieści osiem i pół stopnia" → temperature: 38.5, "dziewięć lat" → age: 9, "od wczoraj" → duration: 1, duration_unit: "days". Pole "symptoms" powinno zawierać objawy oddzielone przecinkami, a "medications" leki oddzielone przecinkami. Rozróżniaj brak informacji od wyraźnej odpowiedzi przeczącej: jeśli pacjent w ogóle nie wspomniał o lekach, ustaw "medications" na null; jeśli pacjent wyraźnie powiedział, że nie zażywał żadnych leków (np. "nie brałem żadnych leków"), ustaw "medications" dokładnie na "nie". Jeśli czas trwania nie został w ogóle wspomniany, jako jedyny wyjątek od zakazu wymyślania podaj najbardziej zachowawcze przybliżenie: duration: 0, duration_unit: "days".`;
 
   const response = await fetch('https://api.openai.com/v1/chat/completions', {
     method: 'POST',
@@ -237,10 +295,10 @@ export default function VoiceIntakeScreen() {
     try {
       setAnalyzingStage('transcribing');
       const text = await transcribeAudio(uri, elevenLabsKey.trim());
-      setTranscript(text);
+      setTranscript((prev) => (prev ? `${prev}\n\n— Dodatkowe nagranie —\n${text}` : text));
       setAnalyzingStage('extracting');
       const extracted = await extractFields(text, recipient, openAiKey.trim());
-      setResult(extracted);
+      setResult((prev) => (prev ? mergeExtractedData(prev, extracted) : extracted));
       setScreen('results');
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Wystąpił nieoczekiwany błąd.');
@@ -262,6 +320,11 @@ export default function VoiceIntakeScreen() {
   const handleRecordAgain = () => {
     setResult(null);
     setTranscript('');
+    setError(null);
+    setScreen('recording');
+  };
+
+  const handleSupplementRecording = () => {
     setError(null);
     setScreen('recording');
   };
@@ -331,11 +394,13 @@ export default function VoiceIntakeScreen() {
 
         {screen === 'recording' && recipient && (
           <View style={styles.container}>
-            <ThemedText type="title">{RECORDING_TITLES[recipient]}</ThemedText>
+            <ThemedText type="title">
+              {result ? 'Uzupełnij brakujące informacje' : RECORDING_TITLES[recipient]}
+            </ThemedText>
             <ThemedText style={styles.subtitle}>Postaraj się wspomnieć o:</ThemedText>
-            {PROMPT_ITEMS[recipient].map((item) => (
-              <ThemedText key={item} style={styles.promptItem}>
-                {'•'} {item}
+            {(result ? FIELD_KEYS.filter((field) => isFieldMissing(result, field)) : FIELD_KEYS).map((field) => (
+              <ThemedText key={field} style={styles.promptItem}>
+                {'•'} {PROMPT_ITEMS[recipient][field]}
               </ThemedText>
             ))}
 
@@ -377,39 +442,22 @@ export default function VoiceIntakeScreen() {
           <ScrollView contentContainerStyle={styles.container}>
             <ThemedText type="title">Podsumowanie wywiadu</ThemedText>
 
-            {(
-              [
-                { label: 'Objawy', missing: !result.symptoms, value: result.symptoms },
-                {
-                  label: 'Czas trwania',
-                  missing: result.duration == null,
-                  value: `${result.duration} ${result.duration_unit === 'hours' ? 'godz.' : 'dni'}`,
-                },
-                {
-                  label: 'Temperatura',
-                  missing: result.temperature == null,
-                  value: result.temperature != null ? `${result.temperature}°C` : null,
-                },
-                { label: 'Przyjęte leki', missing: !result.medications, value: result.medications },
-                {
-                  label: 'Wiek',
-                  missing: result.age == null,
-                  value: result.age != null ? `${result.age} lat` : null,
-                },
-              ] as const
-            ).map((row) => (
-              <View key={row.label} style={styles.checklistRow}>
-                <ThemedText style={row.missing ? styles.checklistIconMissing : styles.checklistIconDone}>
-                  {row.missing ? '✗' : '✓'}
-                </ThemedText>
-                <View style={styles.checklistTextWrap}>
-                  <ThemedText style={styles.checklistLabel}>{row.label}</ThemedText>
-                  <ThemedText style={row.missing ? styles.checklistValueMissing : styles.checklistValue}>
-                    {row.value ?? 'Brak informacji'}
+            {FIELD_KEYS.map((field) => {
+              const missing = isFieldMissing(result, field);
+              return (
+                <View key={field} style={styles.checklistRow}>
+                  <ThemedText style={missing ? styles.checklistIconMissing : styles.checklistIconDone}>
+                    {missing ? '✗' : '✓'}
                   </ThemedText>
+                  <View style={styles.checklistTextWrap}>
+                    <ThemedText style={styles.checklistLabel}>{FIELD_LABELS[field]}</ThemedText>
+                    <ThemedText style={missing ? styles.checklistValueMissing : styles.checklistValue}>
+                      {formatFieldValue(result, field) ?? 'Brak informacji'}
+                    </ThemedText>
+                  </View>
                 </View>
-              </View>
-            ))}
+              );
+            })}
 
             <ThemedText style={styles.label}>Transkrypcja</ThemedText>
             <ThemedView style={styles.transcriptBox}>
@@ -417,8 +465,18 @@ export default function VoiceIntakeScreen() {
             </ThemedView>
 
             <Pressable style={[styles.primaryButton, { backgroundColor: tint }]} onPress={handleRecordAgain}>
-              <ThemedText style={styles.primaryButtonText}>Nagraj ponownie</ThemedText>
+              <ThemedText style={styles.primaryButtonText}>Nagraj całość ponownie</ThemedText>
             </Pressable>
+
+            {FIELD_KEYS.some((field) => isFieldMissing(result, field)) && (
+              <Pressable
+                style={[styles.secondaryButton, { borderColor: tint }]}
+                onPress={handleSupplementRecording}>
+                <ThemedText style={[styles.secondaryButtonText, { color: tint }]}>
+                  Dograj brakujące informacje
+                </ThemedText>
+              </Pressable>
+            )}
 
             {/* Dev-only: remove before shipping to patients */}
             <ThemedText style={styles.label}>DEBUG — Structured extraction</ThemedText>
@@ -469,6 +527,17 @@ const styles = StyleSheet.create({
   },
   primaryButtonText: {
     color: '#fff',
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  secondaryButton: {
+    marginTop: 12,
+    borderRadius: 12,
+    borderWidth: 1.5,
+    paddingVertical: 16,
+    alignItems: 'center',
+  },
+  secondaryButtonText: {
     fontSize: 16,
     fontWeight: '600',
   },
