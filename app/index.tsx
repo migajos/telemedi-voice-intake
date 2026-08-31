@@ -19,7 +19,7 @@ import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 
 type Recipient = 'self' | 'child';
-type Screen = 'setup' | 'context' | 'recording' | 'analyzing' | 'results';
+type Screen = 'setup' | 'context' | 'recording' | 'analyzing' | 'results' | 'submitted';
 type PatientType = 'adult' | 'child';
 type DurationUnit = 'hours' | 'days';
 
@@ -329,6 +329,10 @@ export default function VoiceIntakeScreen() {
     setScreen('recording');
   };
 
+  const handleSubmitToDoctor = () => {
+    setScreen('submitted');
+  };
+
   return (
     <SafeAreaView style={{ flex: 1 }}>
       <ThemedView style={styles.flex}>
@@ -464,6 +468,14 @@ export default function VoiceIntakeScreen() {
               <ThemedText>{transcript}</ThemedText>
             </ThemedView>
 
+            {FIELD_KEYS.every((field) => !isFieldMissing(result, field)) && (
+              <Pressable
+                style={[styles.primaryButton, { backgroundColor: '#3C9D57' }]}
+                onPress={handleSubmitToDoctor}>
+                <ThemedText style={styles.primaryButtonText}>Wyślij do lekarza</ThemedText>
+              </Pressable>
+            )}
+
             <Pressable style={[styles.primaryButton, { backgroundColor: tint }]} onPress={handleRecordAgain}>
               <ThemedText style={styles.primaryButtonText}>Nagraj całość ponownie</ThemedText>
             </Pressable>
@@ -484,6 +496,18 @@ export default function VoiceIntakeScreen() {
               <ThemedText style={styles.debugText}>{JSON.stringify(result, null, 2)}</ThemedText>
             </ThemedView>
           </ScrollView>
+        )}
+
+        {screen === 'submitted' && (
+          <View style={[styles.container, styles.centered]}>
+            <ThemedText type="title">Dziękujemy!</ThemedText>
+            <ThemedText style={[styles.subtitle, styles.submittedText]}>
+              Wstępny wywiad został przygotowany i przekazany lekarzowi.
+            </ThemedText>
+            <ThemedText style={[styles.subtitle, styles.submittedText]}>
+              Lekarz będzie miał dostęp do tych informacji podczas teleporady.
+            </ThemedText>
+          </View>
         )}
       </ThemedView>
     </SafeAreaView>
@@ -507,6 +531,9 @@ const styles = StyleSheet.create({
     fontSize: 16,
     opacity: 0.7,
     marginBottom: 8,
+  },
+  submittedText: {
+    textAlign: 'center',
   },
   label: {
     fontSize: 14,
